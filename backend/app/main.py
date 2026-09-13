@@ -8,19 +8,27 @@ from pydantic import BaseModel, Field
 
 from .evaluator import evaluate_task
 from .executor import Executor
+from .memory import MEMORY_KINDS, recall, remember
 from .observer import observer
 from .planner import Plan, build_default_plan, normalize_plan, topological_order
 from .regression import golden_dataset, regression_engine
+from .storage import store
 from .tool_registry import authorization, list_tools, set_policy
 from .verifier import verify_task
 
-app = FastAPI(title="Agentic-AI", version="1.7.0")
+app = FastAPI(title="Agentic-AI", version="1.8.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-tasks: dict[str, dict[str, Any]] = {}
+tasks: dict[str, dict[str, Any]] = {task["id"]: task for task in store.load_tasks()}
 
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def persist(task: dict[str, Any]) -> None:
+    task["updated_at"] = now()
+    store.save_task(task)
+    store.save_trace_events(task["id"], observer.list(task["id"]))
 
 
 executor = Executor(observer, now)
@@ -59,16 +67,25 @@ class GoldenCaseCreate(BaseModel):
     tags: list[str] = []
 
 
+class MemoryCreate(BaseModel):
+    content: str = Field(min_length=1, max_length=20000)
+    kind: str = "episodic"
+    importance: float = Field(default=0.5, ge=0, le=1)
+    metadata: dict[str, Any] = {}
+
+
 def run_evaluation(task: dict[str, Any]) -> dict[str, Any]:
     result = evaluate_task(task, review=task.get("human_review"))
     task["evaluation"] = result
+    store.save_evaluation(task["id"], result, now())
     observer.emit(task["id"], "evaluation_completed", status=result["overall_status"], score=result["overall_score"], confidence=result["confidence"])
+    persist(task)
     return result
 
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "service": "agentic-ai", "version": app.version}
+    return {"status": "ok", "service": "agentic-ai", "version": app.version, "persistence": "sqlite"}
 
 
 @app.get("/api/tools")
@@ -98,9 +115,11 @@ def update_tool_policy(tool_name: str, request: ToolPolicyUpdate):
 def create_task(request: TaskCreate):
     task_id = str(uuid4())
     plan = build_default_plan(request.goal)
-    task = {"id": task_id, "goal": request.goal, "autonomy": request.autonomy, "status": "planned", "created_at": now(), "updated_at": now(), "plan_version": plan.version, "steps": [s.model_dump() for s in plan.steps], "events": [{"type": "task_created", "at": now()}], "verification": None, "evaluation": None, "human_review": None, "result": None}
+    timestamp = now()
+    task = {"id": task_id, "goal": request.goal, "autonomy": request.autonomy, "status": "planned", "created_at": timestamp, "updated_at": timestamp, "plan_version": plan.version, "steps": [s.model_dump() for s in plan.steps], "events": [{"type": "task_created", "at": timestamp}], "verification": None, "evaluation": None, "human_review": None, "result": None}
     tasks[task_id] = task
     observer.emit(task_id, "task_created", goal=request.goal, autonomy=request.autonomy)
+    persist(task)
     return task
 
 
@@ -137,8 +156,9 @@ def update_plan(task_id: str, request: PlanUpdate):
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     plan.version = task["plan_version"] + 1
-    task.update({"plan_version": plan.version, "goal": plan.goal, "steps": [s.model_dump() for s in plan.steps], "updated_at": now()})
+    task.update({"plan_version": plan.version, "goal": plan.goal, "steps": [s.model_dump() for s in plan.steps]})
     observer.emit(task_id, "plan_updated", version=plan.version)
+    persist(task)
     return task
 
 
@@ -161,8 +181,9 @@ def replan(task_id: str):
         raise HTTPException(409, "cannot_replan_current_state")
     plan = build_default_plan(task["goal"])
     plan.version = task["plan_version"] + 1
-    task.update({"plan_version": plan.version, "steps": [s.model_dump() for s in plan.steps], "status": "planned", "updated_at": now()})
+    task.update({"plan_version": plan.version, "steps": [s.model_dump() for s in plan.steps], "status": "planned"})
     observer.emit(task_id, "plan_rebuilt", version=plan.version)
+    persist(task)
     return task
 
 
@@ -176,20 +197,21 @@ async def approve_task(task_id: str, request: Approval):
     if not request.approved:
         task["status"] = "cancelled"
         observer.emit(task_id, "plan_rejected")
+        persist(task)
         return task
     task["status"] = "running"
     observer.emit(task_id, "plan_approved", version=task["plan_version"])
     plan = Plan.model_validate({"version": task["plan_version"], "goal": task["goal"], "steps": task["steps"]})
     await executor.execute_plan(task, topological_order(plan))
-    task["updated_at"] = now()
     task["verification"] = verify_task(task)
     if task["status"] == "completed" and task["verification"]["passed"]:
-        task["result"] = "V1.7 execution completed and verified."
+        task["result"] = "V1.8 execution completed and verified."
         observer.emit(task_id, "verification_passed", verification=task["verification"])
     else:
         task["status"] = "failed" if task["status"] == "completed" else task["status"]
         task["result"] = "Execution did not satisfy verification."
         observer.emit(task_id, "verification_failed", verification=task["verification"])
+    persist(task)
     run_evaluation(task)
     return task
 
@@ -202,7 +224,7 @@ def cancel_task(task_id: str):
     executor.cancel(task_id)
     if task["status"] in {"planned", "running"}:
         task["status"] = "cancelled"
-    task["updated_at"] = now()
+    persist(task)
     return task
 
 
@@ -210,7 +232,8 @@ def cancel_task(task_id: str):
 def task_trace(task_id: str):
     if task_id not in tasks:
         raise HTTPException(404, "task_not_found")
-    return {"task_id": task_id, "events": observer.list(task_id)}
+    events = observer.list(task_id) or store.load_trace_events(task_id)
+    return {"task_id": task_id, "events": events}
 
 
 @app.get("/api/tasks/{task_id}/verification")
@@ -242,8 +265,8 @@ async def retry_task(task_id: str):
         task["status"] = "failed"
     elif task["status"] == "completed":
         observer.emit(task_id, "verification_passed", verification=task["verification"])
+    persist(task)
     run_evaluation(task)
-    task["updated_at"] = now()
     return task
 
 
@@ -255,6 +278,7 @@ def verify_task_endpoint(task_id: str):
     result = verify_task(task)
     task["verification"] = result
     observer.emit(task_id, "verification_passed" if result["passed"] else "verification_failed", verification=result)
+    persist(task)
     return result
 
 
@@ -264,6 +288,13 @@ def get_evaluation(task_id: str):
     if not task:
         raise HTTPException(404, "task_not_found")
     return task.get("evaluation") or run_evaluation(task)
+
+
+@app.get("/api/tasks/{task_id}/evaluations")
+def evaluation_history(task_id: str):
+    if task_id not in tasks:
+        raise HTTPException(404, "task_not_found")
+    return {"task_id": task_id, "evaluations": store.list_evaluations(task_id)}
 
 
 @app.post("/api/tasks/{task_id}/evaluate")
@@ -314,3 +345,18 @@ def run_regression():
 @app.get("/api/regression/history")
 def regression_history():
     return {"runs": regression_engine.list_history()}
+
+
+@app.post("/api/memory")
+def create_memory(request: MemoryCreate):
+    try:
+        return remember(request.content, request.kind, request.importance, request.metadata)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.get("/api/memory")
+def search_memory(q: str = "", kind: str | None = None, limit: int = 20):
+    if kind is not None and kind not in MEMORY_KINDS:
+        raise HTTPException(422, "unknown_memory_kind")
+    return {"count": len(recall(q, kind, limit)), "kinds": MEMORY_KINDS, "memories": recall(q, kind, limit)}

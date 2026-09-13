@@ -10,10 +10,11 @@ from .evaluator import evaluate_task
 from .executor import Executor
 from .observer import observer
 from .planner import Plan, build_default_plan, normalize_plan, topological_order
+from .regression import golden_dataset, regression_engine
 from .tool_registry import authorization, list_tools, set_policy
 from .verifier import verify_task
 
-app = FastAPI(title="Agentic-AI", version="1.6.0")
+app = FastAPI(title="Agentic-AI", version="1.7.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 tasks: dict[str, dict[str, Any]] = {}
 
@@ -48,6 +49,14 @@ class HumanReview(BaseModel):
     score: float = Field(ge=0, le=1)
     label: str = "reviewed"
     notes: str = ""
+
+
+class GoldenCaseCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    goal: str = Field(min_length=1, max_length=10000)
+    expected_checks: dict[str, bool] = {}
+    expected_status: str = "passed"
+    tags: list[str] = []
 
 
 def run_evaluation(task: dict[str, Any]) -> dict[str, Any]:
@@ -175,7 +184,7 @@ async def approve_task(task_id: str, request: Approval):
     task["updated_at"] = now()
     task["verification"] = verify_task(task)
     if task["status"] == "completed" and task["verification"]["passed"]:
-        task["result"] = "V1.6 execution completed and verified."
+        task["result"] = "V1.7 execution completed and verified."
         observer.emit(task_id, "verification_passed", verification=task["verification"])
     else:
         task["status"] = "failed" if task["status"] == "completed" else task["status"]
@@ -273,3 +282,35 @@ def human_review(task_id: str, review: HumanReview):
     task["human_review"] = review.model_dump()
     observer.emit(task_id, "human_review_submitted", score=review.score, label=review.label)
     return run_evaluation(task)
+
+
+@app.get("/api/golden")
+def list_golden_cases():
+    return {"count": len(golden_dataset.list()), "cases": golden_dataset.list()}
+
+
+@app.post("/api/golden")
+def add_golden_case(request: GoldenCaseCreate):
+    if request.expected_status not in {"passed", "failed"}:
+        raise HTTPException(422, "expected_status_must_be_passed_or_failed")
+    case = golden_dataset.add(request.name, request.goal, request.expected_checks, request.expected_status, request.tags)
+    return case.as_dict()
+
+
+@app.delete("/api/golden/{case_id}")
+def delete_golden_case(case_id: str):
+    if not golden_dataset.remove(case_id):
+        raise HTTPException(404, "golden_case_not_found")
+    return {"deleted": True, "case_id": case_id}
+
+
+@app.post("/api/regression/run")
+def run_regression():
+    result = regression_engine.run(evaluate_task)
+    observer.emit("regression", "regression_completed", run_id=result.run_id, passed=result.passed, total=result.total)
+    return result.as_dict()
+
+
+@app.get("/api/regression/history")
+def regression_history():
+    return {"runs": regression_engine.list_history()}

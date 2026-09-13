@@ -6,7 +6,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-app = FastAPI(title="Agentic-AI", version="1.1.0")
+from .planner import Plan, build_default_plan, normalize_plan, topological_order
+
+app = FastAPI(title="Agentic-AI", version="1.2.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 tasks: dict[str, dict[str, Any]] = {}
@@ -23,17 +25,12 @@ class TaskCreate(BaseModel):
 class Approval(BaseModel):
     approved: bool
 
+class PlanUpdate(BaseModel):
+    plan: Plan
+
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def build_plan(goal: str) -> list[dict[str, Any]]:
-    return [
-        {"id": "step-1", "title": "Understand goal", "tool": "echo", "status": "ready", "risk": "SAFE"},
-        {"id": "step-2", "title": "Execute safe action", "tool": "clock", "status": "blocked", "risk": "SAFE"},
-        {"id": "step-3", "title": "Verify result", "tool": "echo", "status": "blocked", "risk": "SAFE"},
-    ]
 
 
 def deterministic_evaluate(task: dict[str, Any]) -> dict[str, Any]:
@@ -46,6 +43,19 @@ def deterministic_evaluate(task: dict[str, Any]) -> dict[str, Any]:
     passed = all(checks.values())
     return {"status": "passed" if passed else "failed", "score": round(sum(checks.values()) / len(checks), 3), "checks": checks}
 
+
+def execute_plan(task: dict[str, Any]) -> None:
+    steps_by_id = {step["id"]: step for step in task["steps"]}
+    plan = Plan.model_validate({"version": task["plan_version"], "goal": task["goal"], "steps": task["steps"]})
+    for step_id in topological_order(plan):
+        step = steps_by_id[step_id]
+        step["status"] = "running"
+        if step["tool"] == "clock":
+            step["output"] = {"utc": now()}
+        elif step["tool"] == "echo":
+            step["output"] = {"text": task["goal"]}
+        step["status"] = "completed"
+
 @app.get("/api/health")
 def health():
     return {"status": "ok", "service": "agentic-ai", "version": app.version}
@@ -57,10 +67,12 @@ def tools():
 @app.post("/api/tasks")
 def create_task(request: TaskCreate):
     task_id = str(uuid4())
+    plan = build_default_plan(request.goal)
     task = {
         "id": task_id, "goal": request.goal, "autonomy": request.autonomy,
         "status": "planned", "created_at": now(), "updated_at": now(),
-        "steps": build_plan(request.goal), "events": [{"type": "task_created", "at": now()}],
+        "plan_version": plan.version, "steps": [s.model_dump() for s in plan.steps],
+        "events": [{"type": "task_created", "at": now()}],
         "verification": None, "evaluation": None, "result": None,
     }
     tasks[task_id] = task
@@ -76,27 +88,74 @@ def get_task(task_id: str):
         raise HTTPException(404, "task_not_found")
     return tasks[task_id]
 
+@app.get("/api/tasks/{task_id}/plan")
+def get_plan(task_id: str):
+    task = tasks.get(task_id)
+    if not task:
+        raise HTTPException(404, "task_not_found")
+    return {"version": task["plan_version"], "goal": task["goal"], "steps": task["steps"], "order": topological_order(Plan.model_validate({"version": task["plan_version"], "goal": task["goal"], "steps": task["steps"]}))}
+
+@app.put("/api/tasks/{task_id}/plan")
+def update_plan(task_id: str, request: PlanUpdate):
+    task = tasks.get(task_id)
+    if not task:
+        raise HTTPException(404, "task_not_found")
+    if task["status"] in {"running", "completed", "cancelled"}:
+        raise HTTPException(409, "plan_locked")
+    try:
+        plan = normalize_plan(request.plan.model_dump(), set(SAFE_TOOLS))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    plan.version = task["plan_version"] + 1
+    task["plan_version"] = plan.version
+    task["goal"] = plan.goal
+    task["steps"] = [s.model_dump() for s in plan.steps]
+    task["updated_at"] = now()
+    task["events"].append({"type": "plan_updated", "at": now(), "version": plan.version})
+    return task
+
+@app.post("/api/tasks/{task_id}/dry-run")
+def dry_run(task_id: str):
+    task = tasks.get(task_id)
+    if not task:
+        raise HTTPException(404, "task_not_found")
+    plan = Plan.model_validate({"version": task["plan_version"], "goal": task["goal"], "steps": task["steps"]})
+    order = topological_order(plan)
+    return {"valid": True, "version": plan.version, "execution_order": order, "step_count": len(plan.steps), "message": "Plan validated; no tools were executed."}
+
+@app.post("/api/tasks/{task_id}/replan")
+def replan(task_id: str):
+    task = tasks.get(task_id)
+    if not task:
+        raise HTTPException(404, "task_not_found")
+    if task["status"] in {"running", "completed", "cancelled"}:
+        raise HTTPException(409, "cannot_replan_current_state")
+    plan = build_default_plan(task["goal"])
+    plan.version = task["plan_version"] + 1
+    task["plan_version"] = plan.version
+    task["steps"] = [s.model_dump() for s in plan.steps]
+    task["status"] = "planned"
+    task["updated_at"] = now()
+    task["events"].append({"type": "plan_rebuilt", "at": now(), "version": plan.version})
+    return task
+
 @app.post("/api/tasks/{task_id}/approve")
 def approve_task(task_id: str, request: Approval):
     task = tasks.get(task_id)
     if not task:
         raise HTTPException(404, "task_not_found")
+    if task["status"] not in {"planned"}:
+        raise HTTPException(409, f"invalid_task_state:{task['status']}")
     if not request.approved:
         task["status"] = "cancelled"
         task["events"].append({"type": "plan_rejected", "at": now()})
         return task
     task["status"] = "running"
-    task["events"].append({"type": "plan_approved", "at": now()})
-    for step in task["steps"]:
-        step["status"] = "running"
-        if step["tool"] == "clock":
-            step["output"] = {"utc": now()}
-        elif step["tool"] == "echo":
-            step["output"] = {"text": task["goal"]}
-        step["status"] = "completed"
-    task["verification"] = {"passed": True, "method": "deterministic_output_presence", "at": now()}
-    task["result"] = "Safe V1 execution completed and verified."
+    task["events"].append({"type": "plan_approved", "at": now(), "version": task["plan_version"]})
+    execute_plan(task)
     task["status"] = "completed"
+    task["verification"] = {"passed": True, "method": "deterministic_output_presence", "at": now()}
+    task["result"] = "V1.2 plan execution completed and verified."
     task["updated_at"] = now()
     task["events"].append({"type": "task_completed", "at": now()})
     return task

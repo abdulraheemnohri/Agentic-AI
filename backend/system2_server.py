@@ -1,14 +1,17 @@
 """Dedicated System 2 backend process.
 
-Run with: uvicorn backend.system2_server:app --host 127.0.0.1 --port 8102
+Run from repository root with:
+uvicorn backend.system2_server:app --host 127.0.0.1 --port 8102
 The frontend may start, stop, update and upgrade this local runtime.
 """
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from .system2.service import System2LifecycleBackend
 
 backend = System2LifecycleBackend()
 app = FastAPI(title="Agentic-AI System 2 Backend", version="1.0.0")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 class StartRequest(BaseModel):
     runtime_module: str | None = None

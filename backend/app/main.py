@@ -6,24 +6,20 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from .evaluator import evaluate_task
 from .executor import Executor
 from .observer import observer
 from .planner import Plan, build_default_plan, normalize_plan, topological_order
 from .tool_registry import authorization, list_tools, set_policy
-from .verifier import verify_step, verify_task
+from .verifier import verify_task
 
-app = FastAPI(title="Agentic-AI", version="1.5.0")
+app = FastAPI(title="Agentic-AI", version="1.6.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 tasks: dict[str, dict[str, Any]] = {}
 
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def deterministic_evaluate(task: dict[str, Any]) -> dict[str, Any]:
-    checks = {"task_has_goal": bool(task.get("goal", "").strip()), "plan_exists": bool(task.get("steps")), "all_steps_completed": all(s["status"] == "completed" for s in task.get("steps", [])), "verification_passed": bool(task.get("verification", {}).get("passed", False))}
-    return {"status": "passed" if all(checks.values()) else "failed", "score": round(sum(checks.values()) / len(checks), 3), "checks": checks}
 
 
 executor = Executor(observer, now)
@@ -46,6 +42,19 @@ class ToolPolicyUpdate(BaseModel):
     policy: str | None = None
     enabled: bool | None = None
     risk: str | None = None
+
+
+class HumanReview(BaseModel):
+    score: float = Field(ge=0, le=1)
+    label: str = "reviewed"
+    notes: str = ""
+
+
+def run_evaluation(task: dict[str, Any]) -> dict[str, Any]:
+    result = evaluate_task(task, review=task.get("human_review"))
+    task["evaluation"] = result
+    observer.emit(task["id"], "evaluation_completed", status=result["overall_status"], score=result["overall_score"], confidence=result["confidence"])
+    return result
 
 
 @app.get("/api/health")
@@ -80,7 +89,7 @@ def update_tool_policy(tool_name: str, request: ToolPolicyUpdate):
 def create_task(request: TaskCreate):
     task_id = str(uuid4())
     plan = build_default_plan(request.goal)
-    task = {"id": task_id, "goal": request.goal, "autonomy": request.autonomy, "status": "planned", "created_at": now(), "updated_at": now(), "plan_version": plan.version, "steps": [s.model_dump() for s in plan.steps], "events": [{"type": "task_created", "at": now()}], "verification": None, "evaluation": None, "result": None}
+    task = {"id": task_id, "goal": request.goal, "autonomy": request.autonomy, "status": "planned", "created_at": now(), "updated_at": now(), "plan_version": plan.version, "steps": [s.model_dump() for s in plan.steps], "events": [{"type": "task_created", "at": now()}], "verification": None, "evaluation": None, "human_review": None, "result": None}
     tasks[task_id] = task
     observer.emit(task_id, "task_created", goal=request.goal, autonomy=request.autonomy)
     return task
@@ -120,7 +129,6 @@ def update_plan(task_id: str, request: PlanUpdate):
         raise HTTPException(422, str(exc)) from exc
     plan.version = task["plan_version"] + 1
     task.update({"plan_version": plan.version, "goal": plan.goal, "steps": [s.model_dump() for s in plan.steps], "updated_at": now()})
-    task["events"].append({"type": "plan_updated", "at": now(), "version": plan.version})
     observer.emit(task_id, "plan_updated", version=plan.version)
     return task
 
@@ -165,17 +173,15 @@ async def approve_task(task_id: str, request: Approval):
     plan = Plan.model_validate({"version": task["plan_version"], "goal": task["goal"], "steps": task["steps"]})
     await executor.execute_plan(task, topological_order(plan))
     task["updated_at"] = now()
-    if task["status"] == "completed":
-        task["verification"] = verify_task(task)
-        task["result"] = "V1.5 execution completed and deterministically verified." if task["verification"]["passed"] else "Execution completed but verification failed."
-        if not task["verification"]["passed"]:
-            task["status"] = "failed"
-            observer.emit(task_id, "verification_failed", verification=task["verification"])
-        else:
-            observer.emit(task_id, "verification_passed", verification=task["verification"])
+    task["verification"] = verify_task(task)
+    if task["status"] == "completed" and task["verification"]["passed"]:
+        task["result"] = "V1.6 execution completed and verified."
+        observer.emit(task_id, "verification_passed", verification=task["verification"])
     else:
-        task["verification"] = verify_task(task)
-        task["result"] = "Execution stopped before verification could pass."
+        task["status"] = "failed" if task["status"] == "completed" else task["status"]
+        task["result"] = "Execution did not satisfy verification."
+        observer.emit(task_id, "verification_failed", verification=task["verification"])
+    run_evaluation(task)
     return task
 
 
@@ -225,9 +231,9 @@ async def retry_task(task_id: str):
     task["verification"] = verify_task(task)
     if task["status"] == "completed" and not task["verification"]["passed"]:
         task["status"] = "failed"
-        observer.emit(task_id, "verification_failed", verification=task["verification"])
     elif task["status"] == "completed":
         observer.emit(task_id, "verification_passed", verification=task["verification"])
+    run_evaluation(task)
     task["updated_at"] = now()
     return task
 
@@ -243,12 +249,27 @@ def verify_task_endpoint(task_id: str):
     return result
 
 
-@app.post("/api/tasks/{task_id}/evaluate")
-def evaluate_task(task_id: str):
+@app.get("/api/tasks/{task_id}/evaluation")
+def get_evaluation(task_id: str):
     task = tasks.get(task_id)
     if not task:
         raise HTTPException(404, "task_not_found")
-    deterministic = deterministic_evaluate(task)
-    task["evaluation"] = {"deterministic": deterministic, "judge": {"status": "not_configured", "score": None}, "human": {"status": "not_required", "score": None}, "overall_status": deterministic["status"]}
-    observer.emit(task_id, "evaluation_completed", score=deterministic["score"])
-    return task["evaluation"]
+    return task.get("evaluation") or run_evaluation(task)
+
+
+@app.post("/api/tasks/{task_id}/evaluate")
+def evaluate_endpoint(task_id: str):
+    task = tasks.get(task_id)
+    if not task:
+        raise HTTPException(404, "task_not_found")
+    return run_evaluation(task)
+
+
+@app.post("/api/tasks/{task_id}/human-review")
+def human_review(task_id: str, review: HumanReview):
+    task = tasks.get(task_id)
+    if not task:
+        raise HTTPException(404, "task_not_found")
+    task["human_review"] = review.model_dump()
+    observer.emit(task_id, "human_review_submitted", score=review.score, label=review.label)
+    return run_evaluation(task)

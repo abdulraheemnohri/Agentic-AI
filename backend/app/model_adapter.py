@@ -5,6 +5,7 @@ import json
 import os
 import urllib.request
 from dataclasses import dataclass, field
+from time import perf_counter
 from typing import Any, Protocol
 
 @dataclass
@@ -100,7 +101,13 @@ class ModelRuntime:
     system1_enabled:bool=True
     timeout_seconds:float=60.0
     fallback_enabled:bool=True
-    def status(self)->dict[str,Any]: return {"active_system2":self.active_system2,"system1_enabled":self.system1_enabled,"timeout_seconds":self.timeout_seconds,"fallback_enabled":self.fallback_enabled,"system2_network_policy":"loopback_only","system2_role":"local_only"}
+    provider_stats:dict[str,dict[str,Any]]=field(default_factory=dict)
+    def status(self)->dict[str,Any]: return {"active_system2":self.active_system2,"system1_enabled":self.system1_enabled,"timeout_seconds":self.timeout_seconds,"fallback_enabled":self.fallback_enabled,"system2_network_policy":"loopback_only","system2_role":"local_only","system1_provider_stats":self.provider_stats}
+    def record_provider(self, model_id:str, status:str, latency_ms:int=0, error:str|None=None)->None:
+        item=self.provider_stats.setdefault(model_id,{"calls":0,"successes":0,"errors":0,"last_status":"never","last_latency_ms":0,"last_error":None})
+        item["calls"]+=1; item["last_status"]=status; item["last_latency_ms"]=latency_ms; item["last_error"]=error
+        if status=="ok": item["successes"]+=1
+        elif status=="error": item["errors"]+=1
 
 runtime=ModelRuntime()
 _system2:dict[str,BrainModel]={"local-deterministic-v2.2":LocalDeterministicModel()}
@@ -111,7 +118,8 @@ def register_local_system2(model_id:str,base_url:str,model_name:str)->dict[str,A
     _system2[model_id]=OpenAICompatibleLocalModel(model_id,base_url,model_name); return get_model_info(model_id)
 
 def list_models()->list[dict[str,Any]]: return [get_model_info(mid) for mid in _system2]
-def list_system1_models()->list[dict[str,Any]]: return [{"model_id":mid,"role":"system1","provider":getattr(m,"provider","local"),"configured":is_configured(mid),"available":True} for mid,m in _system1.items()]
+def list_system1_models()->list[dict[str,Any]]:
+    return [{"model_id":mid,"role":"system1","provider":getattr(m,"provider","local"),"configured":is_configured(mid),"available":True,"health":runtime.provider_stats.get(mid,{"last_status":"never","calls":0,"successes":0,"errors":0})} for mid,m in _system1.items()]
 def is_configured(model_id:str)->bool:
     if model_id=="system1-openai": return bool(os.getenv("OPENAI_API_KEY"))
     if model_id=="system1-gemini": return bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
@@ -132,11 +140,27 @@ async def system1_review(request:ModelRequest,providers:list[str]|None=None)->di
     selected=providers or list(_system1); reviews=[]
     for provider_id in selected:
         model=_system1.get(provider_id)
-        if not model or not is_configured(provider_id): reviews.append({"model_id":provider_id,"status":"not_configured"}); continue
+        if not model or not is_configured(provider_id):
+            reviews.append({"model_id":provider_id,"status":"not_configured"}); runtime.record_provider(provider_id,"not_configured"); continue
+        started=perf_counter()
         try:
             result=await asyncio.wait_for(model.generate(request),timeout=runtime.timeout_seconds)
-            reviews.append({"model_id":result.model_id,"status":"ok","action":result.action,"reason":result.reason,"confidence":result.confidence,"suggested_tools":result.suggested_tools,"metadata":result.metadata})
-        except Exception as exc: reviews.append({"model_id":provider_id,"status":"error","error":str(exc)})
+            latency=int((perf_counter()-started)*1000); runtime.record_provider(provider_id,"ok",latency)
+            reviews.append({"model_id":result.model_id,"status":"ok","action":result.action,"reason":result.reason,"confidence":result.confidence,"suggested_tools":result.suggested_tools,"metadata":result.metadata,"latency_ms":latency})
+        except Exception as exc:
+            latency=int((perf_counter()-started)*1000); runtime.record_provider(provider_id,"error",latency,str(exc))
+            reviews.append({"model_id":provider_id,"status":"error","error":str(exc),"latency_ms":latency})
     ok=[r for r in reviews if r.get("status")=="ok"]
+    # Safe fallback is System 1 only: the built-in guard may provide an additional review.
+    if runtime.fallback_enabled and not ok and "system1-local-guard" not in selected:
+        fallback=_system1["system1-local-guard"]
+        started=perf_counter()
+        try:
+            result=await asyncio.wait_for(fallback.generate(request),timeout=runtime.timeout_seconds)
+            latency=int((perf_counter()-started)*1000); runtime.record_provider("system1-local-guard","ok",latency)
+            reviews.append({"model_id":result.model_id,"status":"ok","action":result.action,"reason":"safe System 1 fallback: "+result.reason,"confidence":result.confidence,"suggested_tools":result.suggested_tools,"metadata":result.metadata|{"fallback":True},"latency_ms":latency})
+            ok=[r for r in reviews if r.get("status")=="ok"]
+        except Exception as exc:
+            runtime.record_provider("system1-local-guard","error",int((perf_counter()-started)*1000),str(exc))
     allowed=bool(ok) and all(r.get("confidence",0)>=0.5 for r in ok)
-    return {"allowed":allowed,"reviews":reviews,"configured_count":len(ok),"decision":"allow" if allowed else "escalate"}
+    return {"allowed":allowed,"reviews":reviews,"configured_count":len(ok),"decision":"allow" if allowed else "escalate","fallback_used":any(r.get("metadata",{}).get("fallback") for r in reviews)}

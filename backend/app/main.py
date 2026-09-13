@@ -6,6 +6,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from .agent import AgentKernel, new_run
 from .evaluator import evaluate_task
 from .executor import Executor
 from .memory import MEMORY_KINDS, learn_from_task, recall, remember
@@ -16,9 +17,10 @@ from .storage import store
 from .tool_registry import authorization, list_tools, set_policy
 from .verifier import verify_task
 
-app = FastAPI(title="Agentic-AI", version="1.9.0")
+app = FastAPI(title="Agentic-AI", version="2.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 tasks: dict[str, dict[str, Any]] = {task["id"]: task for task in store.load_tasks()}
+agent_runs: dict[str, dict[str, Any]] = {run["run_id"]: run for run in store.load_agent_runs()}
 
 
 def now() -> str:
@@ -38,11 +40,20 @@ def emit(task_id: str, event_type: str, **payload: Any) -> None:
 
 
 executor = Executor(observer, now)
+agent_kernel = AgentKernel(executor, observer, now, emit)
 
 
 class TaskCreate(BaseModel):
     goal: str = Field(min_length=1, max_length=10000)
     autonomy: int = Field(default=1, ge=0, le=5)
+
+
+class AgentRunCreate(BaseModel):
+    goal: str = Field(min_length=1, max_length=10000)
+    autonomy: int = Field(default=1, ge=0, le=5)
+    max_iterations: int = Field(default=5, ge=1, le=20)
+    max_retries: int = Field(default=2, ge=0, le=10)
+    confidence_threshold: float = Field(default=0.70, ge=0, le=1)
 
 
 class Approval(BaseModel):
@@ -97,7 +108,7 @@ def run_evaluation(task: dict[str, Any]) -> dict[str, Any]:
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "service": "agentic-ai", "version": app.version, "storage": "sqlite"}
+    return {"status": "ok", "service": "agentic-ai", "version": app.version, "storage": "sqlite", "agent_kernel": "deterministic-v2"}
 
 
 @app.get("/api/tools")
@@ -132,6 +143,71 @@ def create_task(request: TaskCreate):
     tasks[task_id] = task
     emit(task_id, "task_created", goal=request.goal, autonomy=request.autonomy)
     return task
+
+
+@app.post("/api/agent/run")
+async def run_agent(request: AgentRunCreate):
+    task_id = str(uuid4())
+    created = now()
+    plan = build_default_plan(request.goal)
+    task = {"id": task_id, "goal": request.goal, "autonomy": request.autonomy, "status": "planned", "created_at": created, "updated_at": created, "plan_version": plan.version, "steps": [s.model_dump() for s in plan.steps], "events": [], "verification": None, "evaluation": None, "human_review": None, "result": None}
+    tasks[task_id] = task
+    emit(task_id, "agent_task_created", goal=request.goal, autonomy=request.autonomy)
+    run = new_run(task, now, request.max_iterations, request.max_retries, request.confidence_threshold)
+    agent_runs[run.run_id] = run.as_dict()
+
+    def persist_run(current) -> None:
+        agent_runs[current.run_id] = current.as_dict()
+        store.save_agent_run(agent_runs[current.run_id])
+        persist(task)
+
+    final_run = await agent_kernel.run(task, run, persist_run)
+    if task.get("evaluation"):
+        store.save_evaluation(task_id, task["evaluation"], now())
+    persist(task)
+    agent_runs[final_run.run_id] = final_run.as_dict()
+    return {"run": final_run.as_dict(), "task": task}
+
+
+@app.get("/api/agent/runs")
+def list_agent_runs(limit: int = Query(default=100, ge=1, le=500)):
+    runs = store.load_agent_runs(limit)
+    return {"count": len(runs), "runs": runs}
+
+
+@app.get("/api/agent/{run_id}")
+def get_agent_run(run_id: str):
+    run = agent_runs.get(run_id) or store.get_agent_run(run_id)
+    if not run:
+        raise HTTPException(404, "agent_run_not_found")
+    task = tasks.get(run["task_id"])
+    return {"run": run, "task": task}
+
+
+@app.get("/api/agent/{run_id}/trace")
+def agent_trace(run_id: str):
+    run = agent_runs.get(run_id) or store.get_agent_run(run_id)
+    if not run:
+        raise HTTPException(404, "agent_run_not_found")
+    return {"run_id": run_id, "events": store.load_trace_events(run["task_id"]) or observer.list(run["task_id"])}
+
+
+@app.post("/api/agent/{run_id}/cancel")
+def cancel_agent(run_id: str):
+    run = agent_runs.get(run_id) or store.get_agent_run(run_id)
+    if not run:
+        raise HTTPException(404, "agent_run_not_found")
+    agent_kernel.cancel(run_id)
+    run["status"] = "cancel_requested"
+    run["phase"] = "recovering"
+    agent_runs[run_id] = run
+    store.save_agent_run(run)
+    task = tasks.get(run["task_id"])
+    if task:
+        executor.cancel(task["id"])
+        task["status"] = "cancelled"
+        persist(task)
+    return run
 
 
 @app.get("/api/tasks")
@@ -210,7 +286,7 @@ async def approve_task(task_id: str, request: Approval):
     plan = Plan.model_validate({"version": task["plan_version"], "goal": task["goal"], "steps": task["steps"]})
     await executor.execute_plan(task, topological_order(plan)); task["verification"] = verify_task(task)
     if task["status"] == "completed" and task["verification"]["passed"]:
-        task["result"] = "V1.9 execution completed and verified."; emit(task_id, "verification_passed", verification=task["verification"])
+        task["result"] = "V2.0 execution completed and verified."; emit(task_id, "verification_passed", verification=task["verification"])
     else:
         task["status"] = "failed" if task["status"] == "completed" else task["status"]; task["result"] = "Execution did not satisfy verification."; emit(task_id, "verification_failed", verification=task["verification"])
     run_evaluation(task); learn_from_task(task); persist(task)
@@ -317,7 +393,7 @@ def get_memory(memory_id: str):
 @app.get("/api/storage/stats")
 def storage_stats():
     with store.connect() as db:
-        counts = {table: db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in ("tasks", "evaluations", "traces", "golden_cases", "regression_runs", "memories")}
+        counts = {table: db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in ("tasks", "evaluations", "traces", "golden_cases", "regression_runs", "memories", "agent_runs")}
     return {"database": str(store.path), "counts": counts}
 
 

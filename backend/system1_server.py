@@ -1,11 +1,12 @@
 """Dedicated System 1 backend process.
 
-Run with: uvicorn system1_server:app --host 127.0.0.1 --port 8101
+Run from repository root with:
+uvicorn backend.system1_server:app --host 127.0.0.1 --port 8101
 System 1 starts automatically and has no public stop endpoint.
 """
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
-from .system_backends import system1_backend, startup_backends, shutdown_backends
+from backend.system_backends import system1_backend, startup_backends, shutdown_backends
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

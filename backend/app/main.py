@@ -18,7 +18,7 @@ from .storage import store
 from .tool_registry import authorization, list_tools, set_policy
 from .verifier import verify_task
 
-app = FastAPI(title="Agentic-AI", version="2.1.0")
+app = FastAPI(title="Agentic-AI", version="2.5.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 app.include_router(brain_router)
 tasks: dict[str, dict[str, Any]] = {task["id"]: task for task in store.load_tasks()}
@@ -65,7 +65,7 @@ def run_evaluation(task: dict[str, Any]) -> dict[str, Any]:
     emit(task["id"], "evaluation_completed", status=result["overall_status"], score=result["overall_score"], confidence=result["confidence"]); store.save_evaluation(task["id"], result, now()); return result
 
 @app.get("/api/health")
-def health(): return {"status": "ok", "service": "agentic-ai", "version": app.version, "storage": "sqlite", "agent_kernel": "local-brain-v2.1"}
+def health(): return {"status": "ok", "service": "agentic-ai", "version": app.version, "storage": "sqlite", "agent_kernel": "system1-authoritative-v2.5"}
 
 @app.get("/api/tools")
 def tools(): return {tool["name"]: tool for tool in list_tools()}

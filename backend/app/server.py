@@ -5,7 +5,21 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from .main import app as agent_app
+from .async_agent_routes import router as async_agent_router
 from ..system_backends import router as backend_router, shutdown_backends, startup_backends
+
+
+def _remove_legacy_agent_run_route() -> None:
+    """Replace the legacy synchronous endpoint while preserving every other route."""
+    agent_app.router.routes[:] = [
+        route for route in agent_app.router.routes
+        if not (getattr(route, "path", None) == "/api/agent/run" and "POST" in getattr(route, "methods", set()))
+    ]
+
+
+_remove_legacy_agent_run_route()
+agent_app.include_router(async_agent_router)
+agent_app.include_router(backend_router)
 
 
 @asynccontextmanager
@@ -17,8 +31,6 @@ async def lifespan(_: FastAPI):
         await shutdown_backends()
 
 
-# Reuse the existing Agentic-AI application and add the two-backend control plane.
-agent_app.include_router(backend_router)
 agent_app.router.lifespan_context = lifespan
 app = agent_app
 

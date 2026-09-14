@@ -1,6 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './style.css';
+import { GlassCard, StatusBadge, HealthIndicator } from './components';
+import System1Page from './pages/System1';
+import System2Page from './pages/System2';
+import CouncilPage from './pages/Council';
 
 const API = 'http://localhost:8000/api';
 
@@ -188,7 +192,69 @@ function App() {
   const providerStats = brain?.runtime?.system1_provider_stats || {};
   const phases = useMemo(() => ['understanding', 'memory_retrieval', 'reasoning', 'planning', 'dry_run', 'system1_review', 'permission', 'executing', 'observing', 'verifying', 'evaluating', 'recovering', 'learning'], []);
 
-  const nav = ['Dashboard', 'Agent', 'System 1 Council', 'System 2 Models', 'Tasks', 'Memory', 'Evaluations', 'Tools', 'Logs', 'Settings'];
+  // Navigation with new pages
+  const nav = ['Dashboard', 'Agent', 'System 1', 'System 2', 'Council', 'Tasks', 'Memory', 'Evaluations', 'Tools', 'Logs', 'Settings'];
+
+  // Render the appropriate page based on the tab
+  const renderPage = () => {
+    switch (tab) {
+      case 'System 1':
+        return <System1Page />;
+      case 'System 2':
+        return <System2Page />;
+      case 'Council':
+        return <CouncilPage />;
+      case 'Dashboard':
+        return (
+          <>
+            <section className="hero">
+              <div className="hero-copy"><span className="kicker">EXECUTION OBSERVATORY</span><h2>Run work. Watch every decision.</h2><p>Local System 2 proposes. System 1 reviews and authorizes. Permissions, tools, verification, evaluation and recovery remain visible in one audit surface.</p></div>
+              <div className="composer"><textarea value={goal} onChange={e => setGoal(e.target.value)} placeholder="Describe a goal for the agent…"/><button onClick={runAgent} disabled={busy}>{busy ? 'Running…' : 'Run Agent →'}</button></div>
+            </section>
+            <section className="stats-grid">
+              <Stat label="AGENT RUNS" value={runs.length} detail="Persisted execution history"/>
+              <Stat label="COMPLETED" value={runs.filter(x => x.status === 'completed').length} detail="Verified successful runs"/>
+              <Stat label="SYSTEM 1" value={`${brain?.system1?.filter((x: Any) => x.configured).length || 0} ready`} detail="Council providers"/>
+              <Stat label="SYSTEM 2" value={brain?.system2?.length || 0} detail="Loopback/local models"/>
+            </section>
+            <section className="panel boundary"><div className="panel-head"><div><span className="kicker">CONTROL BOUNDARY</span><h3>Runtime architecture</h3></div></div><div className="boundary-grid"><div className="boundary-node"><span className="node-icon s2">S2</span><div><b>{model || 'local-deterministic-v2.2'}</b><small>Local reasoning / proposal only</small></div><span className="tag good">LOCAL</span></div><div className="arrow">→</div><div className="boundary-node"><span className="node-icon s1">S1</span><div><b>System 1 Council</b><small>Review + permission + risk gate</small></div><span className="tag good">AUTHORITY</span></div><div className="arrow">→</div><div className="boundary-node"><span className="node-icon ex">EX</span><div><b>Executor</b><small>Tools + observer + verifier</small></div><span className="tag">GUARDED</span></div></div></section>
+          </>
+        );
+      case 'Agent':
+        return (
+          <section className="observatory-layout">
+            <div className="panel run-list"><div className="panel-head"><div><span className="kicker">RUN CONTROL</span><h3>Execution sessions</h3></div><button className="ghost" onClick={load}>Refresh</button></div>{runs.length ? runs.map(run => <button className={`run-row ${selectedRunId === run.run_id ? 'selected' : ''}`} key={run.run_id} onClick={() => watchRun(run.run_id)}><div className="run-main"><StatusDot value={run.status}/><div><b>{run.goal}</b><small>{run.run_id.slice(0, 8)} · {run.phase} · iteration {run.iteration}/{run.max_iterations}</small></div></div><span className={`tag ${tone(run.status)}`}>{run.status}</span></button>) : <div className="empty">No agent runs yet.</div>}</div>
+            <div className="panel observatory"><div className="panel-head"><div><span className="kicker">LIVE TRACE</span><h3>{selected?.goal || 'Select a run'}</h3></div>{selected && <div className="live-actions"><span className={`tag ${tone(selected.status)}`}>{selected.status}</span><button className="danger ghost" onClick={cancelRun} disabled={['completed','failed','escalated','cancelled'].includes(selected.status)}>Cancel</button></div>}</div>
+              {selected ? <>
+                <div className="phase-strip">{phases.map(phase => <div className={`phase ${selected.phase === phase ? 'current' : phases.indexOf(phase) < phases.indexOf(selected.phase) ? 'done' : ''}`} key={phase}><i/><span>{phase.replace('_', ' ')}</span></div>)}</div>
+                <div className="trace-grid">
+                  <section className="trace-card wide"><div className="trace-title"><b>System 2 proposal</b><span className="tag good">LOCAL ONLY</span></div>{selected.decisions?.at(-1) ? <><div className="decision-action">{selected.decisions.at(-1).action}</div><p>{selected.decisions.at(-1).reason}</p><div className="meter"><span style={{ width: pct(selected.decisions.at(-1).confidence) }}/></div><small>Confidence {pct(selected.decisions.at(-1).confidence)} · model {selected.decisions.at(-1).model_id}</small></> : <div className="empty">Waiting for reasoning.</div>}</section>
+                  <section className="trace-card"><div className="trace-title"><b>Council gate</b><span className={`tag ${tone(latestCouncil?.decision)}`}>{latestCouncil?.decision || 'pending'}</span></div><div className="vote-list">{Object.entries(latestCouncil?.votes || {}).map(([key, value]: any) => <div className="vote" key={key}><span>{key}</span><strong>{value}</strong></div>)}</div><small>{latestCouncil?.disagreement ? 'Disagreement detected — fail-closed policy applies.' : 'No disagreement recorded.'}</small></section>
+                  <section className="trace-card"><div className="trace-title"><b>Permission gate</b><span className={`tag ${selected.council_decisions?.length && latestCouncil?.allowed ? 'good' : 'warn'}`}>{latestCouncil?.allowed ? 'AUTHORIZED' : 'HELD'}</span></div><p>{latestCouncil?.allowed ? 'System 1 authorized the guarded execution boundary.' : 'Execution remains blocked until the System 1 gate allows it.'}</p>{live.task?.steps?.map((step: Any) => <div className="mini-row" key={step.id}><span>{step.tool}</span><span className={`tag ${tone(step.status)}`}>{step.status}</span></div>)}</section>
+                  <section className="trace-card"><div className="trace-title"><b>Verification</b><span className={`tag ${tone(live.task?.verification?.passed ? 'passed' : 'pending')}`}>{live.task?.verification?.passed ? 'PASSED' : 'PENDING'}</span></div><pre>{JSON.stringify(live.task?.verification || {}, null, 2)}</pre></section>
+                  <section className="trace-card"><div className="trace-title"><b>Evaluation</b><span className={`tag ${tone(live.task?.evaluation?.overall_status)}`}>{live.task?.evaluation?.overall_status || 'pending'}</span></div><div className="score">{live.task?.evaluation ? Math.round((live.task.evaluation.overall_score || 0) * 100) : 0}<small>/100</small></div><p>{live.task?.evaluation?.summary || 'Evaluation will appear after verification.'}</p></section>
+                  <section className="trace-card wide"><div className="trace-title"><b>Event stream</b><span>{stream.length} events</span></div><div className="event-stream">{stream.slice(-80).reverse().map((event: Any) => <div className="event" key={`${event.sequence}-${event.at}`}><span className="event-seq">#{event.sequence}</span><span className="event-name">{event.event}</span><small>{event.at}</small><code>{JSON.stringify(event).slice(0, 360)}</code></div>)}</div></section>
+                </div>
+              </> : <div className="empty big">Select an agent run to open the live execution observatory.</div>}
+            </div>
+          </section>
+        );
+      case 'Tasks':
+        return (
+          <section className="panel"><div className="panel-head"><div><span className="kicker">HISTORY</span><h3>Task audit</h3></div><button className="ghost" onClick={load}>Refresh</button></div>{tasks.length ? tasks.slice(0, 50).map(task => <div className="audit-row" key={task.id}><div><StatusDot value={task.status}/><b>{task.goal}</b><small>{new Date(task.updated_at).toLocaleString()} · plan v{task.plan_version}</small></div><span className={`tag ${tone(task.status)}`}>{task.status}</span></div>) : <div className="empty">No tasks yet.</div>}</section>
+        );
+      case 'Memory':
+      case 'Evaluations':
+      case 'Tools':
+      case 'Logs':
+      case 'Settings':
+        return (
+          <section className="panel placeholder"><span className="kicker">CONTROL SURFACE</span><h3>{tab}</h3><p>Backend controls for this surface remain available. V2.8 keeps the execution observatory as the primary live audit view while preserving the existing API contracts.</p><div className="api-list"><code>GET /api/agent/{'{run_id}'}</code><code>GET /api/agent/{'{run_id}'}/trace</code><code>GET /api/brain/system1/providers</code><code>GET /api/brain/system2/discover</code></div></section>
+        );
+      default:
+        return <div className="empty big">Page not found.</div>;
+    }
+  };
 
   return <div className="app">
     <aside>
@@ -200,56 +266,13 @@ function App() {
 
     <main>
       <header>
-        <div><p className="eyebrow">GUARDED AGENT KERNEL • V2.8 OBSERVATORY</p><h1>{tab}</h1></div>
+        <div><p className="eyebrow">GUARDED AGENT KERNEL • V3.2 OBSERVATORY</p><h1>{tab}</h1></div>
         <div className="header-actions"><span className="pill">{brain?.runtime?.system2_network_policy || 'LOOPBACK ONLY'}</span><button className="icon-button" onClick={load}>↻</button></div>
       </header>
 
       {message && <div className="notice"><span>●</span>{message}<button onClick={() => setMessage('')}>×</button></div>}
 
-      {tab === 'Dashboard' && <>
-        <section className="hero">
-          <div className="hero-copy"><span className="kicker">EXECUTION OBSERVATORY</span><h2>Run work. Watch every decision.</h2><p>Local System 2 proposes. System 1 reviews and authorizes. Permissions, tools, verification, evaluation and recovery remain visible in one audit surface.</p></div>
-          <div className="composer"><textarea value={goal} onChange={e => setGoal(e.target.value)} placeholder="Describe a goal for the agent…"/><button onClick={runAgent} disabled={busy}>{busy ? 'Running…' : 'Run Agent →'}</button></div>
-        </section>
-        <section className="stats-grid">
-          <Stat label="AGENT RUNS" value={runs.length} detail="Persisted execution history"/>
-          <Stat label="COMPLETED" value={runs.filter(x => x.status === 'completed').length} detail="Verified successful runs"/>
-          <Stat label="SYSTEM 1" value={`${brain?.system1?.filter((x: Any) => x.configured).length || 0} ready`} detail="Council providers"/>
-          <Stat label="SYSTEM 2" value={brain?.system2?.length || 0} detail="Loopback/local models"/>
-        </section>
-        <section className="panel boundary"><div className="panel-head"><div><span className="kicker">CONTROL BOUNDARY</span><h3>Runtime architecture</h3></div></div><div className="boundary-grid"><div className="boundary-node"><span className="node-icon s2">S2</span><div><b>{model || 'local-deterministic-v2.2'}</b><small>Local reasoning / proposal only</small></div><span className="tag good">LOCAL</span></div><div className="arrow">→</div><div className="boundary-node"><span className="node-icon s1">S1</span><div><b>System 1 Council</b><small>Review + permission + risk gate</small></div><span className="tag good">AUTHORITY</span></div><div className="arrow">→</div><div className="boundary-node"><span className="node-icon ex">EX</span><div><b>Executor</b><small>Tools + observer + verifier</small></div><span className="tag">GUARDED</span></div></div></section>
-      </>}
-
-      {tab === 'Agent' && <section className="observatory-layout">
-        <div className="panel run-list"><div className="panel-head"><div><span className="kicker">RUN CONTROL</span><h3>Execution sessions</h3></div><button className="ghost" onClick={load}>Refresh</button></div>{runs.length ? runs.map(run => <button className={`run-row ${selectedRunId === run.run_id ? 'selected' : ''}`} key={run.run_id} onClick={() => watchRun(run.run_id)}><div className="run-main"><StatusDot value={run.status}/><div><b>{run.goal}</b><small>{run.run_id.slice(0, 8)} · {run.phase} · iteration {run.iteration}/{run.max_iterations}</small></div></div><span className={`tag ${tone(run.status)}`}>{run.status}</span></button>) : <div className="empty">No agent runs yet.</div>}</div>
-        <div className="panel observatory"><div className="panel-head"><div><span className="kicker">LIVE TRACE</span><h3>{selected?.goal || 'Select a run'}</h3></div>{selected && <div className="live-actions"><span className={`tag ${tone(selected.status)}`}>{selected.status}</span><button className="danger ghost" onClick={cancelRun} disabled={['completed','failed','escalated','cancelled'].includes(selected.status)}>Cancel</button></div>}</div>
-          {selected ? <>
-            <div className="phase-strip">{phases.map(phase => <div className={`phase ${selected.phase === phase ? 'current' : phases.indexOf(phase) < phases.indexOf(selected.phase) ? 'done' : ''}`} key={phase}><i/><span>{phase.replace('_', ' ')}</span></div>)}</div>
-            <div className="trace-grid">
-              <section className="trace-card wide"><div className="trace-title"><b>System 2 proposal</b><span className="tag good">LOCAL ONLY</span></div>{selected.decisions?.at(-1) ? <><div className="decision-action">{selected.decisions.at(-1).action}</div><p>{selected.decisions.at(-1).reason}</p><div className="meter"><span style={{ width: pct(selected.decisions.at(-1).confidence) }}/></div><small>Confidence {pct(selected.decisions.at(-1).confidence)} · model {selected.decisions.at(-1).model_id}</small></> : <div className="empty">Waiting for reasoning.</div>}</section>
-              <section className="trace-card"><div className="trace-title"><b>Council gate</b><span className={`tag ${tone(latestCouncil?.decision)}`}>{latestCouncil?.decision || 'pending'}</span></div><div className="vote-list">{Object.entries(latestCouncil?.votes || {}).map(([key, value]: any) => <div className="vote" key={key}><span>{key}</span><strong>{value}</strong></div>)}</div><small>{latestCouncil?.disagreement ? 'Disagreement detected — fail-closed policy applies.' : 'No disagreement recorded.'}</small></section>
-              <section className="trace-card"><div className="trace-title"><b>Permission gate</b><span className={`tag ${selected.council_decisions?.length && latestCouncil?.allowed ? 'good' : 'warn'}`}>{latestCouncil?.allowed ? 'AUTHORIZED' : 'HELD'}</span></div><p>{latestCouncil?.allowed ? 'System 1 authorized the guarded execution boundary.' : 'Execution remains blocked until the System 1 gate allows it.'}</p>{live.task?.steps?.map((step: Any) => <div className="mini-row" key={step.id}><span>{step.tool}</span><span className={`tag ${tone(step.status)}`}>{step.status}</span></div>)}</section>
-              <section className="trace-card"><div className="trace-title"><b>Verification</b><span className={`tag ${tone(live.task?.verification?.passed ? 'passed' : 'pending')}`}>{live.task?.verification?.passed ? 'PASSED' : 'PENDING'}</span></div><pre>{JSON.stringify(live.task?.verification || {}, null, 2)}</pre></section>
-              <section className="trace-card"><div className="trace-title"><b>Evaluation</b><span className={`tag ${tone(live.task?.evaluation?.overall_status)}`}>{live.task?.evaluation?.overall_status || 'pending'}</span></div><div className="score">{live.task?.evaluation ? Math.round((live.task.evaluation.overall_score || 0) * 100) : 0}<small>/100</small></div><p>{live.task?.evaluation?.summary || 'Evaluation will appear after verification.'}</p></section>
-              <section className="trace-card wide"><div className="trace-title"><b>Event stream</b><span>{stream.length} events</span></div><div className="event-stream">{stream.slice(-80).reverse().map((event: Any) => <div className="event" key={`${event.sequence}-${event.at}`}><span className="event-seq">#{event.sequence}</span><span className="event-name">{event.event}</span><small>{event.at}</small><code>{JSON.stringify(event).slice(0, 360)}</code></div>)}</div></section>
-            </div>
-          </> : <div className="empty big">Select an agent run to open the live execution observatory.</div>}
-        </div>
-      </section>}
-
-      {tab === 'System 1 Council' && <>
-        <section className="panel"><div className="panel-head"><div><span className="kicker">AUTHORITY</span><h3>Provider health & review council</h3></div><button className="ghost" onClick={load}>Refresh</button></div><div className="provider-grid">{(brain?.system1 || []).map((provider: Any) => { const health = providerStats[provider.model_id] || provider.health || {}; return <div className="provider-card" key={provider.model_id}><div className="provider-head"><span className="node-icon s1">S1</span><div><b>{provider.model_id}</b><small>{provider.provider || 'builtin'}</small></div><StatusDot value={health.last_status || (provider.configured ? 'ok' : 'not_configured')}/></div><div className="provider-metrics"><span>Calls <b>{health.calls || 0}</b></span><span>OK <b>{health.successes || 0}</b></span><span>Errors <b>{health.errors || 0}</b></span><span>Latency <b>{health.last_latency_ms || 0}ms</b></span></div><div className="provider-foot"><span className={`tag ${provider.configured ? 'good' : 'neutral'}`}>{provider.configured ? 'CONFIGURED' : 'NOT CONFIGURED'}</span>{health.last_error && <small title={health.last_error}>Last error recorded</small>}</div></div>})}</div></section>
-        <section className="panel settings-panel"><span className="kicker">COUNCIL POLICY</span><h3>Decision controls</h3><div className="settings-grid"><label>Mode<select value={policy.mode} onChange={e => setPolicy({ ...policy, mode: e.target.value })}><option value="any">Any approval</option><option value="all">All providers</option><option value="consensus">Consensus</option></select></label><label>Minimum confidence <b>{pct(policy.minimum_confidence)}</b><input type="range" min="0" max="1" step=".05" value={policy.minimum_confidence} onChange={e => setPolicy({ ...policy, minimum_confidence: Number(e.target.value) })}/></label><label>Minimum reviews<input type="number" min="1" max="20" value={policy.minimum_reviews} onChange={e => setPolicy({ ...policy, minimum_reviews: Number(e.target.value) })}/></label><label className="check"><input type="checkbox" checked={policy.fail_closed_on_disagreement !== false} onChange={e => setPolicy({ ...policy, fail_closed_on_disagreement: e.target.checked })}/> Fail closed on disagreement</label></div><button onClick={savePolicy}>Save Council Policy</button></section>
-      </>}
-
-      {tab === 'System 2 Models' && <>
-        <section className="panel"><div className="panel-head"><div><span className="kicker">LOCAL BRAIN</span><h3>System 2 model manager</h3></div><button className="ghost" onClick={discoverModels}>Discover Local Servers</button></div><div className="provider-grid">{(brain?.system2 || []).map((item: Any) => <div className="provider-card" key={item.model_id}><div className="provider-head"><span className="node-icon s2">S2</span><div><b>{item.model_id}</b><small>Loopback / local only</small></div></div><p>Remote execution is prohibited. This model can propose but cannot authorize tools.</p><button className={item.active ? 'selected-button' : 'ghost'} onClick={() => activate(item.model_id)}>{item.active ? '● Active System 2' : 'Activate'}</button></div>)}</div></section>
-        <section className="panel"><span className="kicker">LOCAL DISCOVERY</span><h3>Register OpenAI-compatible loopback server</h3><div className="formrow"><input value={localName} onChange={e => setLocalName(e.target.value)} placeholder="Model ID"/><input value={localUrl} onChange={e => setLocalUrl(e.target.value)} placeholder="http://127.0.0.1:1234"/><button onClick={register}>Register</button></div>{discover.map((item: Any) => <div className="discovery-row" key={`${item.provider}-${item.base_url}`}><div><b>{item.provider}</b><small>{item.base_url}</small></div><span className={`tag ${item.reachable ? 'good' : 'neutral'}`}>{item.reachable ? `UP · ${item.latency_ms}ms` : 'OFFLINE'}</span></div>)}</section>
-      </>}
-
-      {tab === 'Tasks' && <section className="panel"><div className="panel-head"><div><span className="kicker">HISTORY</span><h3>Task audit</h3></div><button className="ghost" onClick={load}>Refresh</button></div>{tasks.length ? tasks.slice(0, 50).map(task => <div className="audit-row" key={task.id}><div><StatusDot value={task.status}/><b>{task.goal}</b><small>{new Date(task.updated_at).toLocaleString()} · plan v{task.plan_version}</small></div><span className={`tag ${tone(task.status)}`}>{task.status}</span></div>) : <div className="empty">No tasks yet.</div>}</section>}
-
-      {['Memory', 'Evaluations', 'Tools', 'Logs', 'Settings'].includes(tab) && <section className="panel placeholder"><span className="kicker">CONTROL SURFACE</span><h3>{tab}</h3><p>Backend controls for this surface remain available. V2.8 keeps the execution observatory as the primary live audit view while preserving the existing API contracts.</p><div className="api-list"><code>GET /api/agent/{'{run_id}'}</code><code>GET /api/agent/{'{run_id}'}/trace</code><code>GET /api/brain/system1/providers</code><code>GET /api/brain/system2/discover</code></div></section>}
+      {renderPage()}
     </main>
   </div>;
 }

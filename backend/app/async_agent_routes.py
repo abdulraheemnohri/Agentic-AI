@@ -27,12 +27,9 @@ def _task_payload(goal: str, autonomy: int, plan: Any, created: str, task_id: st
 async def _execute(run_id: str, task: dict[str, Any], run: Any) -> None:
     try:
         def persist_run(current: Any) -> None:
-            core.agent_runs[current.run_id] = current.as_dict()
-            core.store.save_agent_run(core.agent_runs[current.run_id])
-            core.persist(task)
+            core.agent_runs[current.run_id] = current.as_dict(); core.store.save_agent_run(core.agent_runs[current.run_id]); core.persist(task)
         final_run = await core.agent_kernel.run(task, run, persist_run)
-        if task.get("evaluation"):
-            core.store.save_evaluation(task["id"], task["evaluation"], core.now())
+        if task.get("evaluation"): core.store.save_evaluation(task["id"], task["evaluation"], core.now())
         core.persist(task); core.agent_runs[final_run.run_id] = final_run.as_dict(); core.store.save_agent_run(core.agent_runs[final_run.run_id])
     except asyncio.CancelledError:
         task["status"] = "cancelled"; core.persist(task)
@@ -60,7 +57,7 @@ async def run_agent_async(request: core.AgentRunCreate):
     try:
         background = await runtime.submit(run.run_id, work)
     except Exception as exc:
-        core.agent_runs.pop(run.run_id, None); core.store.delete_agent_run(run.run_id); core.tasks.pop(task_id, None)
+        core.agent_runs.pop(run.run_id, None); core.tasks.pop(task_id, None)
         raise HTTPException(503, str(exc)) from exc
     _active_tasks[run.run_id] = background
     return JSONResponse(status_code=202, content={"accepted": True, "run_id": run.run_id, "task_id": task_id, "run": run.as_dict(), "task": task, "message": "Agent run accepted; execution continues asynchronously."})

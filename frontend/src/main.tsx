@@ -7,6 +7,15 @@ import System2Page from './pages/System2';
 import CouncilPage from './pages/Council';
 import ObservatoryPage from './pages/Observatory';
 import RecoveryPage from './pages/Recovery';
+import ModelsPage from './pages/Models';
+import RuntimePage from './pages/Runtime';
+import AuditPage from './pages/Audit';
+import SecurityPage from './pages/Security';
+import HealthPage from './pages/Health';
+import SettingsPage from './pages/Settings';
+import MemoryPage from './pages/Memory';
+import EvaluationsPage from './pages/Evaluations';
+import ToolsPage from './pages/Tools';
 
 const API = 'http://localhost:8000/api';
 
@@ -194,8 +203,27 @@ function App() {
   const providerStats = brain?.runtime?.system1_provider_stats || {};
   const phases = useMemo(() => ['understanding', 'memory_retrieval', 'reasoning', 'planning', 'dry_run', 'system1_review', 'permission', 'executing', 'observing', 'verifying', 'evaluating', 'recovering', 'learning'], []);
 
-  // Navigation with new pages
-  const nav = ['Dashboard', 'Agent', 'Observatory', 'Recovery', 'System 1', 'System 2', 'Council', 'Tasks', 'Memory', 'Evaluations', 'Tools', 'Logs', 'Settings'];
+  // Navigation with all pages
+  const nav = [
+    'Dashboard',
+    'Agent',
+    'Observatory',
+    'Recovery',
+    'System 1',
+    'System 2',
+    'Council',
+    'Models',
+    'Runtime',
+    'Audit',
+    'Security',
+    'Health',
+    'Settings',
+    'Memory',
+    'Evaluations',
+    'Tools',
+    'Tasks',
+    'Logs',
+  ];
 
   // Render the appropriate page based on the tab
   const renderPage = () => {
@@ -210,6 +238,24 @@ function App() {
         return <ObservatoryPage />;
       case 'Recovery':
         return <RecoveryPage />;
+      case 'Models':
+        return <ModelsPage />;
+      case 'Runtime':
+        return <RuntimePage />;
+      case 'Audit':
+        return <AuditPage />;
+      case 'Security':
+        return <SecurityPage />;
+      case 'Health':
+        return <HealthPage />;
+      case 'Settings':
+        return <SettingsPage />;
+      case 'Memory':
+        return <MemoryPage />;
+      case 'Evaluations':
+        return <EvaluationsPage />;
+      case 'Tools':
+        return <ToolsPage />;
       case 'Dashboard':
         return (
           <>
@@ -249,11 +295,7 @@ function App() {
         return (
           <section className="panel"><div className="panel-head"><div><span className="kicker">HISTORY</span><h3>Task audit</h3></div><button className="ghost" onClick={load}>Refresh</button></div>{tasks.length ? tasks.slice(0, 50).map(task => <div className="audit-row" key={task.id}><div><StatusDot value={task.status}/><b>{task.goal}</b><small>{new Date(task.updated_at).toLocaleString()} · plan v{task.plan_version}</small></div><span className={`tag ${tone(task.status)}`}>{task.status}</span></div>) : <div className="empty">No tasks yet.</div>}</section>
         );
-      case 'Memory':
-      case 'Evaluations':
-      case 'Tools':
       case 'Logs':
-      case 'Settings':
         return (
           <section className="panel placeholder"><span className="kicker">CONTROL SURFACE</span><h3>{tab}</h3><p>Backend controls for this surface remain available. V3.2 keeps the execution observatory as the primary live audit view while preserving the existing API contracts.</p><div className="api-list"><code>GET /api/agent/{'{run_id}'}</code><code>GET /api/agent/{'{run_id}'}/trace</code><code>GET /api/brain/system1/providers</code><code>GET /api/brain/system2/discover</code></div></section>
         );

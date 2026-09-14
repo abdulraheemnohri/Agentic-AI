@@ -5,6 +5,7 @@ import { GlassCard, StatusBadge, HealthIndicator } from './components';
 import System1Page from './pages/System1';
 import System2Page from './pages/System2';
 import CouncilPage from './pages/Council';
+import ObservatoryPage from './pages/Observatory';
 
 const API = 'http://localhost:8000/api';
 
@@ -193,7 +194,7 @@ function App() {
   const phases = useMemo(() => ['understanding', 'memory_retrieval', 'reasoning', 'planning', 'dry_run', 'system1_review', 'permission', 'executing', 'observing', 'verifying', 'evaluating', 'recovering', 'learning'], []);
 
   // Navigation with new pages
-  const nav = ['Dashboard', 'Agent', 'System 1', 'System 2', 'Council', 'Tasks', 'Memory', 'Evaluations', 'Tools', 'Logs', 'Settings'];
+  const nav = ['Dashboard', 'Agent', 'Observatory', 'System 1', 'System 2', 'Council', 'Tasks', 'Memory', 'Evaluations', 'Tools', 'Logs', 'Settings'];
 
   // Render the appropriate page based on the tab
   const renderPage = () => {
@@ -204,6 +205,8 @@ function App() {
         return <System2Page />;
       case 'Council':
         return <CouncilPage />;
+      case 'Observatory':
+        return <ObservatoryPage />;
       case 'Dashboard':
         return (
           <>
@@ -249,7 +252,7 @@ function App() {
       case 'Logs':
       case 'Settings':
         return (
-          <section className="panel placeholder"><span className="kicker">CONTROL SURFACE</span><h3>{tab}</h3><p>Backend controls for this surface remain available. V2.8 keeps the execution observatory as the primary live audit view while preserving the existing API contracts.</p><div className="api-list"><code>GET /api/agent/{'{run_id}'}</code><code>GET /api/agent/{'{run_id}'}/trace</code><code>GET /api/brain/system1/providers</code><code>GET /api/brain/system2/discover</code></div></section>
+          <section className="panel placeholder"><span className="kicker">CONTROL SURFACE</span><h3>{tab}</h3><p>Backend controls for this surface remain available. V3.2 keeps the execution observatory as the primary live audit view while preserving the existing API contracts.</p><div className="api-list"><code>GET /api/agent/{'{run_id}'}</code><code>GET /api/agent/{'{run_id}'}/trace</code><code>GET /api/brain/system1/providers</code><code>GET /api/brain/system2/discover</code></div></section>
         );
       default:
         return <div className="empty big">Page not found.</div>;

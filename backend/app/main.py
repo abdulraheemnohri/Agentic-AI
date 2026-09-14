@@ -10,7 +10,7 @@ from .agent import AgentKernel, new_run
 from .brain_routes import router as brain_router
 from .evaluator import evaluate_task
 from .executor import Executor
-from .event_bus import get_event_bus, emit_task_created, emit_council_decision
+from .event_bus import get_event_bus
 from .memory import MEMORY_KINDS, learn_from_task, recall, remember
 from .observer import observer
 from .planner import Plan, build_default_plan, normalize_plan, topological_order
@@ -19,11 +19,13 @@ from .regression import golden_dataset, regression_engine
 from .storage import store
 from .tool_registry import authorization, list_tools, set_policy
 from .verifier import verify_task
+from .websocket_routes import router as websocket_router
 
 app = FastAPI(title="Agentic-AI", version="3.2.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 app.include_router(brain_router)
 app.include_router(recovery_router)
+app.include_router(websocket_router)
 
 # Initialize EventBus
 event_bus = get_event_bus()

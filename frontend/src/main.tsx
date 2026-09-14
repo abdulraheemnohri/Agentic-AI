@@ -6,6 +6,7 @@ import System1Page from './pages/System1';
 import System2Page from './pages/System2';
 import CouncilPage from './pages/Council';
 import ObservatoryPage from './pages/Observatory';
+import RecoveryPage from './pages/Recovery';
 
 const API = 'http://localhost:8000/api';
 
@@ -194,7 +195,7 @@ function App() {
   const phases = useMemo(() => ['understanding', 'memory_retrieval', 'reasoning', 'planning', 'dry_run', 'system1_review', 'permission', 'executing', 'observing', 'verifying', 'evaluating', 'recovering', 'learning'], []);
 
   // Navigation with new pages
-  const nav = ['Dashboard', 'Agent', 'Observatory', 'System 1', 'System 2', 'Council', 'Tasks', 'Memory', 'Evaluations', 'Tools', 'Logs', 'Settings'];
+  const nav = ['Dashboard', 'Agent', 'Observatory', 'Recovery', 'System 1', 'System 2', 'Council', 'Tasks', 'Memory', 'Evaluations', 'Tools', 'Logs', 'Settings'];
 
   // Render the appropriate page based on the tab
   const renderPage = () => {
@@ -207,6 +208,8 @@ function App() {
         return <CouncilPage />;
       case 'Observatory':
         return <ObservatoryPage />;
+      case 'Recovery':
+        return <RecoveryPage />;
       case 'Dashboard':
         return (
           <>

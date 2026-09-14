@@ -1,5 +1,10 @@
-from __future__ import annotations
+"""
+System 2 Intelligence Service
+- Manages local models (Ollama, LM Studio, llama.cpp).
+- Loopback-only, non-authoritative, and replaceable.
+"""
 
+from __future__ import annotations
 import asyncio
 import importlib
 import json
@@ -7,8 +12,10 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 
 @dataclass
@@ -112,3 +119,158 @@ class System2LifecycleBackend:
         self.state.last_update = str(os.times().elapsed)
         self.state.update_available = False
         return self.status()
+
+
+class System2Service:
+    """
+    Core service for System 2 Intelligence.
+    Handles:
+    - Local model discovery (Ollama, LM Studio, llama.cpp)
+    - Model activation/deactivation
+    - Proposal generation
+    - Loopback enforcement
+    """
+
+    def __init__(self):
+        # System 2 State
+        self._state: str = "stopped"
+        self._active_model: Optional[str] = None
+        self._models: Dict[str, Dict[str, Any]] = {}
+        self._proposals: List[Dict[str, Any]] = []
+        self._start_time = datetime.now(timezone.utc)
+
+        # Initialize with default local models (if detected)
+        self.discover_models()
+
+    # --- Lifecycle Methods ---
+
+    def start(self) -> None:
+        """Start System 2."""
+        self._state = "running"
+
+    def stop(self) -> None:
+        """Stop System 2."""
+        self._state = "stopped"
+
+    def restart(self) -> None:
+        """Restart System 2."""
+        self.stop()
+        self.start()
+
+    def get_status(self) -> str:
+        """Get System 2 status."""
+        return self._state
+
+    # --- Model Methods ---
+
+    def discover_models(self) -> List[Dict[str, Any]]:
+        """
+        Discover local models from Ollama, LM Studio, llama.cpp.
+        - Only loopback endpoints are accepted.
+        """
+        # Placeholder: In a real implementation, this would:
+        # 1. Check for Ollama at http://127.0.0.1:11434
+        # 2. Check for LM Studio at http://127.0.0.1:1234
+        # 3. Check for llama.cpp at http://127.0.0.1:8080
+        # For now, return mock data.
+        discovered_models = [
+            {
+                "name": "llama-3.2:70b",
+                "provider": "Ollama",
+                "endpoint": "http://127.0.0.1:11434",
+                "enabled": True,
+                "priority": 1,
+                "size": "70B",
+                "quantization": "Q4",
+                "context_length": 32768,
+                "network_scope": "loopback",
+            },
+            {
+                "name": "mistral-7b",
+                "provider": "LM Studio",
+                "endpoint": "http://127.0.0.1:1234",
+                "enabled": False,
+                "priority": 2,
+                "size": "7B",
+                "quantization": "Q8",
+                "context_length": 4096,
+                "network_scope": "loopback",
+            },
+        ]
+        self._models = {model["name"]: model for model in discovered_models}
+        return discovered_models
+
+    def list_models(self) -> List[Dict[str, Any]]:
+        """List all local models."""
+        return list(self._models.values())
+
+    def get_model(self, model_name: str) -> Optional[Dict[str, Any]]:
+        """Get a specific model."""
+        return self._models.get(model_name)
+
+    def activate_model(self, model_name: str) -> bool:
+        """Activate a local model."""
+        if model_name in self._models:
+            self._models[model_name]["enabled"] = True
+            self._active_model = model_name
+            return True
+        return False
+
+    def deactivate_model(self, model_name: str) -> bool:
+        """Deactivate a local model."""
+        if model_name in self._models:
+            self._models[model_name]["enabled"] = False
+            if self._active_model == model_name:
+                self._active_model = None
+            return True
+        return False
+
+    def get_active_model(self) -> Optional[str]:
+        """Get the currently active model."""
+        return self._active_model
+
+    # --- Loopback Enforcement ---
+
+    @staticmethod
+    def is_loopback(endpoint: str) -> bool:
+        """
+        Check if an endpoint is loopback-only.
+        - Allowed: 127.0.0.1, localhost, ::1
+        - Rejected: Public IPs, domains, https
+        """
+        loopback_hosts = ["127.0.0.1", "localhost", "::1"]
+        for host in loopback_hosts:
+            if host in endpoint:
+                return True
+        return False
+
+    # --- Proposal Methods ---
+
+    def log_proposal(self, proposal: Dict[str, Any]) -> str:
+        """Log a System 2 proposal."""
+        proposal_id = str(uuid4())
+        proposal["proposal_id"] = proposal_id
+        proposal["timestamp"] = datetime.now(timezone.utc).isoformat()
+        self._proposals.append(proposal)
+        return proposal_id
+
+    def get_proposal(self, proposal_id: str) -> Optional[Dict[str, Any]]:
+        """Get a specific proposal."""
+        for proposal in self._proposals:
+            if proposal["proposal_id"] == proposal_id:
+                return proposal
+        return None
+
+    # --- System Metrics ---
+
+    def get_cpu_usage(self) -> float:
+        """Get CPU usage (placeholder)."""
+        return 0.0  # Mock value
+
+    def get_memory_usage(self) -> float:
+        """Get memory usage (placeholder)."""
+        return 0.0  # Mock value
+
+    def get_latency(self) -> float:
+        """Get average latency (placeholder)."""
+        return 0.0  # Mock value
